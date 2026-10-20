@@ -2,20 +2,15 @@
 // ABOUTME: Effect calculations are independent of terminal encoding, timing, and input.
 use crate::raster::{Canvas, Point, Rgb};
 
-/// Draw the timeline at `progress` (0 to 1). `seconds` turns the scattered cloud and moves the
-/// pulses on the beam, so a long transfer stays in motion while its progress holds still. With
-/// `down`, the pulses go from right to left.
-pub fn render(
-    canvas: &mut Canvas,
-    width: usize,
-    height: usize,
-    progress: f32,
-    seconds: f32,
-    down: bool,
-) {
+/// The workspace leaves its destination at this progress.
+pub const DEPART: f32 = 0.12;
+
+/// Draw the timeline at `progress` (0 to 1). `seconds` turns the scattered cloud, so a long
+/// transfer stays in motion while its progress holds still.
+pub fn render(canvas: &mut Canvas, width: usize, height: usize, progress: f32, seconds: f32) {
     canvas.clear();
     let t = progress.clamp(0.0, 1.0);
-    let travel = smooth((t - 0.12) / 0.76);
+    let travel = smooth((t - DEPART) / (1.0 - 2.0 * DEPART));
     let scatter = (std::f32::consts::PI * travel).sin().powi(2);
     let scale = (width as f32 * 0.025).min(height as f32 * 0.24);
     // Whole dots, so both destination frames rasterize the same.
@@ -35,43 +30,20 @@ pub fn render(
         }
     };
 
-    // Destination frames sway around both axes along an ellipse, so their side, top, and bottom
-    // faces show depth. The tilt is largest when the sway passes through zero. They do not move
-    // from their places; their geometry gives the movement a clear reference.
+    // Destination frames sway around the vertical axis, so their side faces show depth. They do
+    // not tilt: a top face only a few dots high shows as steps or as a separate line in braille.
+    // They do not move from their places; their geometry gives the movement a clear reference.
     // The frame that holds the formed workspace glows in its color.
     let sway = SWAY * (seconds * 1.2).sin();
-    let tilt = TILT * (seconds * 1.2).cos();
     for (center, near) in [(left, 1.0 - travel), (right, travel)] {
         let frame = mix([110, 120, 130], color, 0.8 * near * (1.0 - scatter));
         let corners = corners([0.0; 3], [7.3, 5.5, 1.8]);
         let projected = crisp(
-            corners.map(|v| project(rotate(v, sway, tilt), center)),
+            corners.map(|v| project(rotate(v, sway, 0.0), center)),
             scale * 1.7,
         );
         for [a, b] in EDGES {
             canvas.line(projected[a], projected[b], frame);
-        }
-    }
-
-    // While the workspace is in transit, a beam joins the frames. Pulses travel along it toward
-    // the destination: each pulse has a bright head and a tail that fades behind it.
-    let flow = if down { -1.0 } else { 1.0 };
-    let start = left + 7.3 * scale + 3.0;
-    let end = right - 7.3 * scale - 3.0;
-    if scatter > 0.01 && end > start {
-        for x in start.round() as i32..=end.round() as i32 {
-            let along = (x as f32 - start) / (end - start);
-            let phase = pulse(along, seconds, flow);
-            let head = phase.powi(6);
-            let fade = (scatter * 2.5).min(1.0) * (0.75 + 0.25 * head);
-            let beam =
-                mix(color, [255; 3], head * 0.7).map(|channel| (f32::from(channel) * fade) as u8);
-            let y = cy.round() as i32;
-            canvas.dot(x, y, 120.0, beam);
-            if phase > 0.8 {
-                canvas.dot(x, y - 1, 120.0, beam);
-                canvas.dot(x, y + 1, 120.0, beam);
-            }
         }
     }
 
@@ -101,9 +73,24 @@ pub fn render(
             let vertices = corners(center, [half, half, half]);
             let projected = vertices.map(|v| project(rotate(v, yaw, pitch), cx));
             let point = project(rotate(center, yaw, pitch), cx);
+            // The cloud is taller than a short canvas. Near the top and bottom edges it fades out
+            // and stops a few dots before them, so no edge cuts it.
+            let margin = cy - (point.y - cy).abs() - EDGE;
+            if margin <= 0.0 {
+                continue;
+            }
+            let fade = (margin / (cy * 0.3)).min(1.0);
             // In the cloud, nearer blocks are brighter and farther blocks are dimmer.
-            let shade = 1.0 + scatter * ((80.0 - point.depth) / 12.0).clamp(-0.6, 0.3);
-            for (indices, normal) in FACES {
+            let shade = (1.0 + scatter * ((80.0 - point.depth) / 12.0).clamp(-0.6, 0.3))
+                * (0.3 + 0.7 * fade);
+            // A block smaller than a dot would cover a dot in some frames and none in others.
+            // The particle below shows it instead.
+            let faces = if half * scale < 0.5 {
+                &[][..]
+            } else {
+                &FACES[..]
+            };
+            for &(indices, normal) in faces {
                 let normal = rotate(normal, yaw, pitch);
                 if normal[2] >= 0.0 {
                     continue;
@@ -132,14 +119,14 @@ pub fn render(
 
 pub fn stage(progress: f32, down: bool) -> &'static str {
     match progress {
-        p if p < 0.12 => {
+        p if p < DEPART => {
             if down {
                 "Workspace in the sandbox"
             } else {
                 "Workspace on your machine"
             }
         }
-        p if p < 0.88 => {
+        p if p < 1.0 - DEPART => {
             if down {
                 "Bringing the workspace home"
             } else {
@@ -157,13 +144,8 @@ pub fn stage(progress: f32, down: bool) -> &'static str {
 }
 
 const SWAY: f32 = 0.6;
-const TILT: f32 = 0.3;
-
-/// Position in the current pulse at `along` (0 to 1 on the beam): 0 at the tail, 1 at the head.
-/// Three pulses fit on the beam and move in the `flow` direction.
-fn pulse(along: f32, seconds: f32, flow: f32) -> f32 {
-    (along * 3.0 * flow - seconds * 0.8).rem_euclid(1.0)
-}
+/// Dots between the cloud and the top or bottom edge of the canvas.
+const EDGE: f32 = 4.0;
 
 /// A nearly horizontal or vertical box edge would show a step where it crosses a dot boundary.
 /// Put such an edge on one dot row or column when its ends differ by less than `tolerance` dots;
@@ -269,20 +251,20 @@ mod tests {
     }
 
     #[test]
-    fn beam_pulses_move_toward_the_destination_with_the_head_in_front() {
-        // The head is where the phase is highest. Find it near the middle of the beam.
-        let head = |seconds: f32, flow: f32| {
-            (300..700)
-                .map(|i| i as f32 / 1000.0)
-                .max_by(|a, b| pulse(*a, seconds, flow).total_cmp(&pulse(*b, seconds, flow)))
-                .unwrap()
-        };
-        for flow in [1.0, -1.0] {
-            let (before, after) = (head(1.0, flow), head(1.1, flow));
-            assert!((after - before) * flow > 0.0, "{flow}: {before} -> {after}");
-            // Just behind the head the phase is high; just in front it starts again near zero.
-            assert!(pulse(before - 0.01 * flow, 1.0, flow) > 0.9);
-            assert!(pulse(before + 0.01 * flow, 1.0, flow) < 0.1);
+    fn the_scattered_cloud_stays_inside_the_strip() {
+        let mut canvas = Canvas::new(72, 9);
+        for step in 0..40 {
+            render(&mut canvas, 72, 9, 0.5, step as f32 * 0.4);
+            let cells = canvas.resolve();
+            let dots = |cell: &crate::raster::Cell| (cell.glyph as u32).saturating_sub(0x2800);
+            // The three outer dot rows at each edge stay empty. In a braille cell, bits 1 and 8
+            // are the top dot row, 2 and 16 the second, 4 and 32 the third, 64 and 128 the bottom.
+            for cell in &cells[..72] {
+                assert_eq!(dots(cell) & 0x3f, 0, "{step}: {cell:?}");
+            }
+            for cell in &cells[72 * 8..] {
+                assert_eq!(dots(cell) & 0xf6, 0, "{step}: {cell:?}");
+            }
         }
     }
 
@@ -291,10 +273,10 @@ mod tests {
         let mut canvas = Canvas::new(80, 18);
         let mut snapshots = Vec::new();
         for t in [0.0, 0.5, 1.0] {
-            render(&mut canvas, 80, 18, t, 0.0, false);
+            render(&mut canvas, 80, 18, t, 0.0);
             let cells = canvas.resolve().to_vec();
             assert!(cells.iter().filter(|c| c.glyph != ' ').count() > 50);
-            render(&mut canvas, 80, 18, t, 0.0, false);
+            render(&mut canvas, 80, 18, t, 0.0);
             assert_eq!(cells, canvas.resolve());
             snapshots.push(cells);
         }

@@ -118,7 +118,6 @@ fn play(down: bool, seconds: u64, mut size: (u16, u16)) -> Result<()> {
                 height,
                 if down { 1.0 - progress } else { progress },
                 started.elapsed().as_secs_f32(),
-                down,
             );
             encoder.encode(canvas.resolve(), (1, 3), &mut output);
             if changed_size {
@@ -290,7 +289,6 @@ fn measure(down: bool) -> Result<()> {
                 height,
                 if down { 1.0 - t } else { t },
                 frame as f32 / 30.0,
-                down,
             );
             encoder.encode(canvas.resolve(), (1, 3), &mut output);
             times.push(start.elapsed().as_secs_f64() * 1000.0);

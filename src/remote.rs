@@ -138,7 +138,12 @@ impl ToolInstall {
         if !self.rust.is_empty() {
             names.push(format!("Rust {}", self.rust));
         }
-        (!names.is_empty()).then(|| format!("installs {} if missing", names.join(" and ")))
+        (!names.is_empty()).then(|| {
+            format!(
+                "installs {} if missing; existing versions stay",
+                names.join(" and ")
+            )
+        })
     }
 }
 
@@ -1253,6 +1258,23 @@ esac
     }
 
     #[test]
+    fn existing_node_with_another_major_version_stays_and_is_reported() {
+        let d = tempfile::tempdir().unwrap();
+        let stubs = fixture(d.path());
+        executable(&stubs.join("node"), "echo v22.23.3\n");
+        let out = install(d.path(), &stubs, "pnpm", false, "26");
+        assert!(out.is_empty(), "disabled installs print nothing: {out}");
+        let out = install(d.path(), &stubs, "node", true, "26");
+        assert!(
+            out.contains("the sandbox has Node.js 22.23.3; the plan asked for 26"),
+            "{out}"
+        );
+        assert!(!d.path().join("urls").exists(), "Node.js was downloaded");
+        let same = install(d.path(), &stubs, "node", true, "22");
+        assert!(same.is_empty(), "{same}");
+    }
+
+    #[test]
     fn exact_node_versions_use_their_release_directory() {
         let d = tempfile::tempdir().unwrap();
         let stubs = fixture(d.path());
@@ -1300,7 +1322,7 @@ esac
         };
         assert_eq!(
             install.describe().unwrap(),
-            "installs Node.js 22 and pnpm 11.11.0 if missing"
+            "installs Node.js 22 and pnpm 11.11.0 if missing; existing versions stay"
         );
         install.enabled = false;
         assert_eq!(install.describe(), None);

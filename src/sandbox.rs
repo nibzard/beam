@@ -43,10 +43,12 @@ pub struct CreateOpts<'a> {
 pub const CACHE_VOLUME: &str = "beam-cache";
 
 /// Package managers keep their downloads below this directory in the cache volume.
-const CACHE_ENV: [(&str, &str); 7] = [
+const CACHE_ENV: [(&str, &str); 8] = [
     // pnpm 11 and later read pnpm_config_*; earlier versions read npm_config_*.
     ("pnpm_config_store_dir", "/var/cache/beam/pnpm"),
     ("npm_config_store_dir", "/var/cache/beam/pnpm"),
+    // Package metadata. Without it, each sandbox asks the registry about every package again.
+    ("pnpm_config_cache_dir", "/var/cache/beam/pnpm-cache"),
     ("npm_config_cache", "/var/cache/beam/npm"),
     ("YARN_CACHE_FOLDER", "/var/cache/beam/yarn"),
     ("BUN_INSTALL_CACHE_DIR", "/var/cache/beam/bun"),
@@ -150,8 +152,16 @@ impl Target {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 let mut cmd = host_cmd(ssh_host.as_deref(), &args, false);
                 run(&mut cmd).map_err(|e| {
-                    if e.to_string().contains("Unable to find image") || e.to_string().contains("pull access denied") {
-                        e.context(format!("image {image} is not there. Build it: docker build -t {image} images/base"))
+                    if e.to_string().contains("Unable to find image")
+                        || e.to_string().contains("pull access denied")
+                    {
+                        e.context(if image == crate::config::DEFAULT_IMAGE {
+                            format!("image {image} is not there. Build it: beam build-image")
+                        } else {
+                            format!(
+                                "image {image} is not there. Build or pull it on the Docker host"
+                            )
+                        })
                     } else {
                         e
                     }
@@ -466,9 +476,14 @@ impl Target {
                     &["docker", "image", "inspect", "--format", "{{index .Config.Labels \"beam.built\"}}", image],
                     false,
                 ))
-                .with_context(|| format!("image {image} is missing. Run `beam --build-image` to build the default image, or set [sandbox] image"))?;
+                .with_context(|| format!("image {image} is missing. Run `beam build-image` to build the default image, or set [sandbox] image"))?;
+                let rebuild = match ssh_host {
+                    Some(host) => format!("beam build-image --to docker+ssh://{host}"),
+                    None => "beam build-image".into(),
+                };
                 if image == crate::config::DEFAULT_IMAGE
-                    && let Some(warning) = image_age_warning(image, &built, crate::util::now_unix())
+                    && let Some(warning) =
+                        image_age_warning(image, &built, crate::util::now_unix(), &rebuild)
                 {
                     crate::ui::warn(warning);
                 }
@@ -482,8 +497,7 @@ impl Target {
             }
             Target::Daytona { .. } => crate::daytona::preflight()?,
             Target::Steel { .. } => {
-                run(crate::steel::steel().args(["computer", "quota", "--json"]))
-                    .context("Steel requires a CLI with computer support and valid credentials. See the Steel install command in README.md")?;
+                crate::steel::preflight()?;
                 // Tools depend on the checkpoint and are checked after bootstrap, before upload.
             }
         }
@@ -531,8 +545,8 @@ impl Target {
 const IMAGE_MAX_AGE_DAYS: u64 = 30;
 
 /// A warning when the default image is old or has no build time label. `built` is the label value.
-fn image_age_warning(image: &str, built: &str, now: u64) -> Option<String> {
-    let rebuild = "Rebuild it with: beam --build-image";
+fn image_age_warning(image: &str, built: &str, now: u64, command: &str) -> Option<String> {
+    let rebuild = format!("Rebuild it with: {command}");
     match built.trim().parse::<u64>() {
         Ok(at) if at > 0 => {
             let days = now.saturating_sub(at) / 86_400;
@@ -577,19 +591,17 @@ mod tests {
     fn old_or_unlabeled_default_images_get_a_rebuild_warning() {
         let day = 86_400;
         let now = 100 * day;
-        assert_eq!(
-            image_age_warning("beam-base:latest", &(now - 3 * day).to_string(), now),
-            None
-        );
-        let old =
-            image_age_warning("beam-base:latest", &(now - 45 * day).to_string(), now).unwrap();
+        let age =
+            |built: &str| image_age_warning("beam-base:latest", built, now, "beam build-image");
+        assert_eq!(age(&(now - 3 * day).to_string()), None);
+        let old = age(&(now - 45 * day).to_string()).unwrap();
         assert!(
-            old.contains("built 45 days ago") && old.contains("beam --build-image"),
+            old.contains("built 45 days ago") && old.ends_with("Rebuild it with: beam build-image"),
             "{old}"
         );
         // Docker prints "<no value>" for a missing label.
         for missing in ["<no value>", "", "0"] {
-            let warning = image_age_warning("beam-base:latest", missing, now).unwrap();
+            let warning = age(missing).unwrap();
             assert!(warning.contains("older Beam"), "{warning}");
         }
     }

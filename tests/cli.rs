@@ -78,6 +78,51 @@ fn demo_needs_no_project_and_plain_output_does_not_own_the_terminal() {
 }
 
 #[test]
+fn build_image_needs_no_project_and_rejects_targets_without_docker() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_beam"))
+        .args(["build-image", "--to", "steel"])
+        .current_dir(directory.path())
+        .env("TERM", "dumb")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        text(&output).contains("build-image needs a Docker target"),
+        "{}",
+        text(&output)
+    );
+}
+
+#[test]
+fn build_image_flag_with_a_cloud_target_fails_before_the_plan() {
+    let env = Env::new("");
+    let output = env
+        .command(&[
+            "up",
+            "--to",
+            "steel",
+            "--agent",
+            "shell",
+            "--yes",
+            "--build-image",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let output = text(&output);
+    assert!(
+        output.contains("--build-image needs a Docker target"),
+        "{output}"
+    );
+    assert!(output.contains("beam build-image"), "{output}");
+    assert!(
+        !output.contains("destination"),
+        "the plan was shown: {output}"
+    );
+}
+
+#[test]
 fn staged_file_and_extra_size_limits_run_before_provider_access() {
     let env = Env::new("[beam]\nto = 'ssh://not-used'\n[files]\nmax_file_size = '1KB'\n");
     std::fs::write(env.project.join("large"), vec![b'x'; 2048]).unwrap();

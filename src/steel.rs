@@ -30,6 +30,30 @@ pub fn steel() -> Command {
 }
 
 /// Run a steel command with --json and return the "data" object.
+/// Checks the CLI version first, because an old CLI fails later with an unclear error.
+pub fn preflight() -> Result<()> {
+    let version = crate::util::run(steel().arg("--version")).context(
+        "Steel requires the Steel CLI preview. See the Steel install command in README.md",
+    )?;
+    if let Some(e) = version_error(&version) {
+        bail!("{e}. See the Steel install command in README.md");
+    }
+    crate::util::run(steel().args(["computer", "quota", "--json"]))
+        .context("Steel requires valid credentials. Set STEEL_API_KEY")?;
+    Ok(())
+}
+
+/// Returns an error for a CLI older than 0.5, which has no `computer` commands.
+/// Output that does not parse gives no error; the quota check then finds the problem.
+fn version_error(output: &str) -> Option<String> {
+    let version = output.split_whitespace().nth(1)?;
+    let mut parts = version.split(['.', '-']);
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next()?.parse().ok()?;
+    ((major, minor) < (0, 5))
+        .then(|| format!("Steel CLI is too old: found {version}, need 0.5.0-preview.6 or later"))
+}
+
 fn json(cmd: &mut Command) -> Result<Value> {
     let output = cmd
         .arg("--json")
@@ -333,6 +357,26 @@ pub fn ready(id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_error_names_an_old_cli() {
+        let e = version_error("steel 0.4.4").unwrap();
+        assert!(e.contains("found 0.4.4"), "{e}");
+        assert!(e.contains("need 0.5.0-preview.6 or later"), "{e}");
+    }
+
+    #[test]
+    fn version_error_accepts_the_preview_and_later() {
+        assert_eq!(version_error("steel 0.5.0-preview.6"), None);
+        assert_eq!(version_error("steel 0.5.1"), None);
+        assert_eq!(version_error("steel 1.0.0"), None);
+    }
+
+    #[test]
+    fn version_error_ignores_unknown_output() {
+        assert_eq!(version_error(""), None);
+        assert_eq!(version_error("steel dev"), None);
+    }
 
     #[test]
     fn attach_command_marks_the_end_after_the_script() {

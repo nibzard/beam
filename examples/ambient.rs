@@ -29,6 +29,10 @@ fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+    // The same legs as a transfer: the archive moves, then the workspace forms at the destination.
+    if let Some(show) = &show {
+        show.toward(0.6);
+    }
     ui::task(
         if home { "download" } else { "upload" },
         "previewing transfer effect",
@@ -41,9 +45,25 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         },
     )?;
-    if let Some(show) = show {
+    if let Some(show) = &show {
+        show.toward(1.0);
+    }
+    ui::task(
+        if home { "review" } else { "restore" },
+        "previewing arrival",
+        || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            Ok(())
+        },
+    )?;
+    if let Some(show) = &show {
         show.arrive();
     }
+    ui::task("launch", "previewing the work after arrival", || {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        Ok(())
+    })?;
+    drop(show);
     ui::success("Preview complete. Previous output stays in scrollback.");
     Ok(())
 }

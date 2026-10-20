@@ -214,6 +214,15 @@ enum Cmd {
     },
     /// Install the Claude Code skill that moves a local session with `beam`.
     Skill,
+    /// Build the bundled Docker image. No project or transfer is necessary.
+    BuildImage {
+        /// docker, or docker+ssh://HOST to build on that host.
+        #[arg(long, default_value = "docker")]
+        to: String,
+        /// The image tag.
+        #[arg(long, default_value = config::DEFAULT_IMAGE)]
+        image: String,
+    },
     /// Check the transfer plan and destination prerequisites.
     Doctor {
         #[arg(long)]
@@ -318,9 +327,21 @@ fn real_main() -> Result<()> {
         Some(Cmd::Forget { path, yes }) => forget(&dir(path), yes),
         Some(Cmd::Kill { path, yes }) => kill(&dir(path), yes),
         Some(Cmd::Doctor { to, path, agent }) => doctor(&dir(path), to, agent),
+        Some(Cmd::BuildImage { to, image }) => build_image(&to, &image),
         Some(Cmd::Default { target, clear }) => default_target(target, clear),
         Some(Cmd::Skill) => skill(),
     }
+}
+
+fn build_image(to: &str, image: &str) -> Result<()> {
+    let target = sandbox::Target::parse(to)?;
+    if !matches!(target, sandbox::Target::Docker { .. }) {
+        anyhow::bail!("build-image needs a Docker target: docker or docker+ssh://HOST");
+    }
+    ui::step("image", &format!("building {image} on {to}…"));
+    target.build_image(image)?;
+    ui::success(format!("Built {image}."));
+    Ok(())
 }
 
 fn run_up(o: UpOpts) -> Result<()> {

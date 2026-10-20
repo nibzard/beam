@@ -435,7 +435,13 @@ impl Plan {
             }
             (t, TargetSource::Chosen(user_path))
         };
-        Target::parse(&target)?;
+        let parsed = Target::parse(&target)?;
+        // Fail before the session choice and the plan.
+        if a.build_image && !matches!(parsed, Target::Docker { .. }) {
+            bail!(
+                "--build-image needs a Docker target, and {target} is not one. To build the image without a transfer: beam build-image"
+            );
+        }
         let mut adapter = if a.agent == "auto" {
             agent::default_adapter()
         } else {

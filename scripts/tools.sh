@@ -72,6 +72,13 @@ install_uv() {
 }
 install_tools() {
   [ "$INSTALL_TOOLS" = yes ] || return 0
+  # An existing Node.js stays. Say so when its major version differs from the planned one.
+  if [ -n "${NODE_VERSION:-}" ] && command -v node >/dev/null 2>&1; then
+    have=$(node --version 2>/dev/null | sed 's/^v//')
+    if [ "${have%%.*}" != "${NODE_VERSION%%.*}" ]; then
+      echo "beam: the sandbox has Node.js $have; the plan asked for $NODE_VERSION. Beam keeps the existing version."
+    fi
+  fi
   printf '%s\n' "$TOOLS" | while IFS= read -r tool; do
     [ -n "$tool" ] || continue
     command -v "$tool" >/dev/null 2>&1 && continue

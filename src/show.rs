@@ -15,13 +15,15 @@ const SCENE_ROWS: usize = 9;
 const ROWS: usize = SCENE_ROWS + 1;
 const MAX_WIDTH: usize = 72;
 const FRAME: Duration = Duration::from_millis(33);
-const ARRIVAL: Duration = Duration::from_millis(1200);
 const GRAY: [u8; 3] = [110, 120, 130];
 
-/// During work, progress approaches the middle of the journey: the cloud of dots between the
-/// destinations. The arrival then plays the rest of the timeline.
-const CAP: f32 = 0.5;
+/// While a leg of the work runs, progress moves toward the end of the leg, but covers only
+/// `CREEP` of it: the next real event completes the leg. `PACE` is the time constant in seconds.
+const CREEP: f32 = 0.6;
 const PACE: f32 = 4.0;
+/// The shown progress follows its goal with this time constant in seconds. A completed leg thus
+/// shows in a fraction of a second, and no work waits for the animation.
+const CHASE: f32 = 0.25;
 
 struct Strip {
     width: usize,
@@ -30,20 +32,29 @@ struct Strip {
     cells: Vec<Cell>,
     down: bool,
     started: Instant,
-    arrival: Option<(Instant, f32)>,
+    leg: Leg,
+    shown: f32,
+    painted: Instant,
+}
+
+/// The part of the outward timeline that the current work moves through.
+#[derive(Clone, Copy)]
+struct Leg {
+    from: f32,
+    to: f32,
+    started: Instant,
 }
 
 static STRIP: Mutex<Option<Strip>> = Mutex::new(None);
 
-/// Progress of the outward timeline after `seconds` of work.
-fn working(seconds: f32) -> f32 {
-    CAP * (1.0 - (-seconds / PACE).exp())
+/// The outward progress that a leg has earned after `seconds` of work.
+fn goal(from: f32, to: f32, seconds: f32) -> f32 {
+    from + (to - from) * CREEP * (1.0 - (-seconds / PACE).exp())
 }
 
-/// Progress during the arrival, from where the work stopped to the end.
-fn arriving(from: f32, fraction: f32) -> f32 {
-    let t = fraction.clamp(0.0, 1.0);
-    from + (1.0 - from) * t * t * (3.0 - 2.0 * t)
+/// Move `shown` toward `goal` for a frame of `seconds`.
+fn chase(shown: f32, goal: f32, seconds: f32) -> f32 {
+    goal + (shown - goal) * (-seconds / CHASE).exp()
 }
 
 fn strip_width(columns: u16) -> usize {
@@ -59,16 +70,38 @@ impl Strip {
             cells: vec![Cell::default(); width * ROWS],
             down,
             started: Instant::now(),
-            arrival: None,
+            leg: Leg {
+                from: 0.0,
+                to: 0.0,
+                started: Instant::now(),
+            },
+            shown: 0.0,
+            painted: Instant::now(),
         }
     }
 
-    fn progress(&self) -> f32 {
-        let outward = match self.arrival {
-            Some((at, from)) => arriving(from, at.elapsed().as_secs_f32() / ARRIVAL.as_secs_f32()),
-            None => working(self.started.elapsed().as_secs_f32()),
+    /// Advance the shown progress to this frame and return the timeline position.
+    fn progress(&mut self) -> f32 {
+        let leg = self.leg;
+        let target = goal(leg.from, leg.to, leg.started.elapsed().as_secs_f32());
+        self.shown = chase(self.shown, target, self.painted.elapsed().as_secs_f32());
+        self.painted = Instant::now();
+        if self.down {
+            1.0 - self.shown
+        } else {
+            self.shown
+        }
+    }
+
+    /// Complete the current leg and start one that ends at `to`.
+    fn begin(&mut self, to: f32) {
+        // Before the departure nothing moves, so a leg that goes beyond it starts there.
+        let from = self.leg.to.max(self.shown).max(scene::DEPART.min(to));
+        self.leg = Leg {
+            from,
+            to: to.max(from),
+            started: Instant::now(),
         };
-        if self.down { 1.0 - outward } else { outward }
     }
 
     /// Render the scene and the destination names into `cells`.
@@ -81,7 +114,6 @@ impl Strip {
             SCENE_ROWS,
             progress,
             self.started.elapsed().as_secs_f32(),
-            self.down,
         );
         self.cells[..width * SCENE_ROWS].copy_from_slice(self.canvas.resolve());
         let names = &mut self.cells[width * SCENE_ROWS..];
@@ -107,8 +139,16 @@ impl Strip {
 }
 
 /// Clear the strip rows and the cursor line, and leave the cursor at the top row of the strip.
+/// The cursor shows again: it is hidden only while the strip is on the screen.
 fn erase(out: &mut impl Write) {
-    let _ = write!(out, "\r\x1b[{ROWS}A\x1b[J");
+    let _ = write!(out, "\r\x1b[{ROWS}A\x1b[J\x1b[?25h");
+}
+
+/// Reserve the strip rows below the cursor line. The cursor at the end of the progress line
+/// would otherwise blink below the animation.
+fn reserve(out: &mut impl Write) {
+    let _ = out.write_all(&[b'\n'; ROWS]);
+    let _ = out.write_all(b"\x1b[?25l");
 }
 
 /// True while a strip is on the screen.
@@ -129,7 +169,7 @@ pub fn lift(out: &mut impl Write) -> bool {
 pub fn lower(out: &mut impl Write) {
     let mut strip = STRIP.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(strip) = strip.as_mut() {
-        let _ = out.write_all(&[b'\n'; ROWS]);
+        reserve(out);
         strip.encoder.invalidate();
         strip.draw(out);
     }
@@ -148,7 +188,7 @@ pub fn interrupted() {
     }
 }
 
-/// The animation for one transfer. Dropping it erases the strip; `arrive` plays the arrival first.
+/// The animation for one transfer. Dropping it erases the strip at once.
 pub struct Show {
     stop: Arc<AtomicBool>,
     painter: Option<std::thread::JoinHandle<()>>,
@@ -169,7 +209,7 @@ impl Show {
         crate::transporter::cleanup_on_interrupt();
         crate::ui::exclusive(|| {
             let mut out = std::io::stdout().lock();
-            let _ = out.write_all(&[b'\n'; ROWS]);
+            reserve(&mut out);
             let mut strip = Strip::new(strip_width(columns), down);
             strip.render();
             strip.draw(&mut out);
@@ -191,13 +231,23 @@ impl Show {
         })
     }
 
-    /// Play the arrival, then erase the strip.
-    pub fn arrive(self) {
+    /// The work that starts now ends at `to` on the outward timeline (0 to 1). Reaching an
+    /// earlier leg's end is implied. With 1, the workspace forms at the destination.
+    pub fn toward(&self, to: f32) {
         if let Some(strip) = STRIP.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            let from = working(strip.started.elapsed().as_secs_f32());
-            strip.arrival = Some((Instant::now(), from));
+            strip.begin(to);
         }
-        std::thread::sleep(ARRIVAL + FRAME * 2);
+    }
+
+    /// The workspace is at the destination. It forms there while the remaining work runs.
+    pub fn arrive(&self) {
+        if let Some(strip) = STRIP.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            strip.leg = Leg {
+                from: 1.0,
+                to: 1.0,
+                started: Instant::now(),
+            };
+        }
     }
 }
 
@@ -214,10 +264,11 @@ fn paint() {
             && columns >= 40
         {
             erase(&mut out);
-            let _ = write!(out, "\x1b[{ROWS}B");
+            let _ = write!(out, "\x1b[{ROWS}B\x1b[?25l");
             let mut resized = Strip::new(strip_width(columns), strip.down);
             resized.started = strip.started;
-            resized.arrival = strip.arrival;
+            resized.leg = strip.leg;
+            resized.shown = strip.shown;
             *strip = resized;
         }
         strip.render();
@@ -251,22 +302,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn work_holds_the_cloud_between_destinations_and_arrival_completes_the_journey() {
-        assert_eq!(working(0.0), 0.0);
-        let mut previous = 0.0;
+    fn a_leg_moves_toward_its_end_and_only_the_next_event_completes_it() {
+        assert_eq!(goal(0.2, 0.6, 0.0), 0.2);
+        let mut previous = 0.2;
         for seconds in [0.5, 2.0, 8.0, 60.0, 3600.0] {
-            let progress = working(seconds);
+            let progress = goal(0.2, 0.6, seconds);
             assert!(
-                progress > previous && progress <= CAP,
+                progress > previous && progress < 0.6,
                 "{seconds}: {progress}"
             );
             previous = progress;
         }
-        assert!(working(3600.0) > CAP - 0.001);
-        assert_eq!(arriving(0.3, 0.0), 0.3);
-        assert!(arriving(0.3, 0.5) > 0.3 && arriving(0.3, 0.5) < 1.0);
-        assert_eq!(arriving(0.3, 1.0), 1.0);
-        assert_eq!(arriving(0.3, 7.0), 1.0);
+        assert!((goal(0.2, 0.6, 3600.0) - (0.2 + 0.4 * CREEP)).abs() < 0.001);
+        // The shown progress follows a jump within a fraction of a second and does not overshoot.
+        assert_eq!(chase(0.3, 1.0, 0.0), 0.3);
+        assert!(chase(0.3, 1.0, 0.75) > 0.95 && chase(0.3, 1.0, 0.75) < 1.0);
+        assert!(chase(0.3, 1.0, 60.0) <= 1.0);
+    }
+
+    #[test]
+    fn legs_start_at_the_departure_and_never_go_back() {
+        let mut strip = Strip::new(60, false);
+        strip.begin(0.6);
+        assert_eq!(strip.leg.from, scene::DEPART);
+        strip.shown = 0.4;
+        strip.begin(1.0);
+        assert_eq!((strip.leg.from, strip.leg.to), (0.6, 1.0));
+        strip.shown = 0.9;
+        strip.begin(0.6);
+        assert_eq!((strip.leg.from, strip.leg.to), (1.0, 1.0));
+    }
+
+    #[test]
+    fn the_cursor_is_hidden_only_while_the_strip_is_on_the_screen() {
+        let mut out = Vec::new();
+        reserve(&mut out);
+        assert!(out.ends_with(b"\x1b[?25l"));
+        out.clear();
+        erase(&mut out);
+        assert!(out.ends_with(b"\x1b[?25h"));
     }
 
     #[test]

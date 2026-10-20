@@ -67,6 +67,7 @@ Beam applies the remote work and opens the session in Claude Code again. The age
 
 ```sh
 cd ~/dev/app
+beam build-image                 # Build the bundled Docker image; no project needed
 beam --to docker --build-image   # Build the bundled image and send the workspace
 beam attach                      # Open the remote terminal again
 beam down                        # Bring the work home and remove the sandbox
@@ -103,8 +104,8 @@ The project keeps its absolute path in the sandbox. Plain SSH uses a private hom
 
 | Target | Requirements |
 |---|---|
-| `docker` | Local Docker. Use `--build-image` to build the bundled image. |
-| `docker+ssh://HOST` | Docker on HOST. `--build-image` builds the image there. |
+| `docker` | Local Docker. Use `beam build-image` to build the bundled image. |
+| `docker+ssh://HOST` | Docker on HOST. `beam build-image --to docker+ssh://HOST` builds the image there. |
 | `ssh://HOST` | Git, tmux, tar, gzip, and the required project tools. The project path must not exist. Passwordless sudo may be needed to create its parent. |
 | `daytona` | `DAYTONA_API_KEY`, local curl and OpenSSH. Beam creates a sandbox and installs base tools. |
 | `daytona:SNAPSHOT` | The same, using an existing Linux snapshot with your project toolchain. |
@@ -115,9 +116,9 @@ The project keeps its absolute path in the sandbox. Plain SSH uses a private hom
 
 Docker and SSH transfer prerequisites are checked before allocation. Cloud providers check them after allocation and before upload. Git, tmux, archive tools, and the selected agent must be available. Missing transfer tools stop upload; the saved computer can be repaired and reused. Shell transfers also require project tools before upload. `beam doctor --to TARGET` runs the same checks without a transfer.
 
-The bundled Docker image includes Node.js 22, pnpm 11.11.0 (through corepack, so a `packageManager` field selects its own version), Python, Git, tmux, and the latest Claude Code. Beam warns when the image is older than 30 days; rebuild it with `beam --build-image`.
+The bundled Docker image includes Node.js 22, pnpm 11.11.0 (through corepack, so a `packageManager` field selects its own version), Python, Git, tmux, and the latest Claude Code. Beam warns when the image is older than 30 days; rebuild it with `beam build-image`.
 
-In Docker, Steel, and Daytona sandboxes, Beam installs missing Node.js, pnpm, cargo, and uv before setup. Project pins select versions; otherwise Node.js and pnpm match your machine. The plan shows what it installs. SSH hosts get no installations. Docker sandboxes keep package downloads in the `beam-cache` volume, so a repeated `pnpm install` reuses them; set `[sandbox] cache = false` to opt out, and remove it with `docker volume rm beam-cache`.
+In Docker, Steel, and Daytona sandboxes, Beam installs missing Node.js, pnpm, cargo, and uv before setup. Project pins select versions; otherwise Node.js and pnpm match your machine. The plan shows what it installs. SSH hosts get no installations. Docker sandboxes keep package downloads and pnpm metadata in the `beam-cache` volume, so a repeated `pnpm install` reuses them. The registry can still be slow: pnpm checks cached metadata with it; set `[sandbox] cache = false` to opt out, and remove it with `docker volume rm beam-cache`.
 
 For agent transfers, other missing project toolchains become an environment repair task. A custom image or Steel checkpoint can avoid that work. Numeric pins in `.nvmrc`, `.tool-versions`, `mise.toml`, `rust-toolchain.toml`, and `package.json` are checked for supported tools. Dynamic version aliases produce a warning.
 
@@ -213,7 +214,7 @@ Authentication must be available before allocation. The token needs access to pu
 
 Use `--github-auth` to forward authentication without enabling the PR workflow. Both options require a GitHub.com `origin`. In the sandbox, SSH origins use HTTPS and a repository-local `gh` credential helper. Your local origin is unchanged. Beam does not copy SSH private keys or your full GitHub configuration.
 
-The bundled image and cloud bootstrap include `gh`. Rebuild an existing Docker image with `--build-image`. Custom images and SSH hosts need `gh`; agent sessions can receive missing-tool repair instructions.
+The bundled image and cloud bootstrap include `gh`. Rebuild an existing Docker image with `beam build-image`. Custom images and SSH hosts need `gh`; agent sessions can receive missing-tool repair instructions.
 
 For authentication on every transfer without the PR workflow, use:
 
@@ -373,6 +374,7 @@ Setup commands replace detection and must be safe to repeat after failure.
 | `beam [PATH]` or `beam up [PATH]` | Send the workspace or continue an interrupted upload |
 | `beam --dry-run --to TARGET` | Preview and check a transfer without creating it |
 | `beam doctor --to TARGET` | Check the same prerequisites used by upload |
+| `beam build-image [--to docker+ssh://HOST] [--image TAG]` | Build the bundled Docker image without a project or transfer |
 | `beam demo [--down]` | Preview a text animation without a sandbox or credentials |
 | `beam attach [PATH]` | Open the agent or a repair shell |
 | `beam status [--json]` | Show transfer progress, remote readiness, saved recovery, and one next action |

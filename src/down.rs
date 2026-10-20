@@ -151,10 +151,12 @@ fn return_home(st: &mut State, keep: bool, review: bool, detach: bool) -> Result
     ) {
         st.advance(Phase::Returning)?;
     }
+    // The workspace forms at home while the returned work is saved, then the animation stops.
+    let mut show = None;
     if st.phase == Phase::Returning {
         let sb = st.sandbox()?;
         sb.wake()?;
-        let show = crate::show::Show::start(true);
+        show = crate::show::Show::start(true);
         ui::task("agent", "stopping the remote session", || {
             let graceful = agent::get(&st.agent)?.graceful_stop();
             sb.exec(&remote::stop_launched_agent(&st.stage, &st.tmux, graceful))?;
@@ -164,6 +166,9 @@ fn return_home(st: &mut State, keep: bool, review: bool, detach: bool) -> Result
         let pack = pack_script(st)?;
         ui::task("pack", "packing remote work…", || sb.exec(&pack))?;
         let started = std::time::Instant::now();
+        if let Some(show) = &show {
+            show.toward(0.6);
+        }
         ui::task("download", "downloading remote work…", || {
             sb.download(&remote::cat(&format!("{}/back.tar.gz", st.stage)), &package)
         })?;
@@ -171,7 +176,7 @@ fn return_home(st: &mut State, keep: bool, review: bool, detach: bool) -> Result
             "download",
             util::size_and_rate(std::fs::metadata(&package)?.len(), started.elapsed()),
         );
-        if let Some(show) = show {
+        if let Some(show) = &show {
             show.arrive();
         }
         if let Ok(events) = sb.exec(&format!(
@@ -219,6 +224,7 @@ fn return_home(st: &mut State, keep: bool, review: bool, detach: bool) -> Result
         }
         st.recovery = Some(recovery.clone());
         st.save()?;
+        drop(show.take());
         let existing = crate::review::load(st)?;
         let plan = if let Some(plan) = existing {
             let current = git::snapshot(

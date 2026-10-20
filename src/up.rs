@@ -525,6 +525,10 @@ fn continue_up(st: &mut State, a: &UpArgs) -> Result<()> {
         st.advance(Phase::Prepared)?;
     }
     if st.phase == Phase::Prepared {
+        // The workspace leaves with the upload and is past the middle when it completes.
+        if let Some(show) = &show {
+            show.toward(0.6);
+        }
         let upload = || {
             ui::task("upload", "uploading workspace…", || {
                 sb.exec_file(
@@ -570,6 +574,10 @@ fn continue_up(st: &mut State, a: &UpArgs) -> Result<()> {
                 script.as_bytes(),
             )?;
         }
+        // It forms in the sandbox while the workspace is restored there.
+        if let Some(show) = &show {
+            show.toward(1.0);
+        }
         ui::task("restore", "restoring workspace…", || {
             sb.exec(&remote::install_cli(
                 remote::beam_root(&st.stage),
@@ -589,6 +597,9 @@ fn continue_up(st: &mut State, a: &UpArgs) -> Result<()> {
                 git_email: &git::config_get(&st.project_root, "user.email"),
             }))
         })?;
+        if let Some(show) = &show {
+            show.arrive();
+        }
         st.advance(Phase::Restored)?;
     }
     if st.phase == Phase::Restored {
@@ -635,13 +646,9 @@ fn continue_up(st: &mut State, a: &UpArgs) -> Result<()> {
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
         })?;
+        drop(show);
         if settled.is_some() {
             st.advance(Phase::Remote)?;
-            if let Some(show) = show {
-                show.arrive();
-            }
-        } else {
-            drop(show);
         }
         presentation::show(st, Some(&crate::monitor::snapshot(st)?));
         if let Some(status) = settled
